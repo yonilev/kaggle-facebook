@@ -14,6 +14,10 @@ import os
 from sklearn.metrics import classification_report,precision_recall_fscore_support
 import operator
 from scipy.sparse import hstack
+from pygments.lexers import guess_lexer
+
+
+
 
 def createStopWords():
     return set(stopwords.words('english'))
@@ -31,6 +35,8 @@ class SampleAttributes:
 
 def parseSample(sample):
     codeTokens = set()
+    formulaTokens = set()
+    codeNames = set()
     att = SampleAttributes()
     formulaRegex = '''\$.+?\$\$?'''
     urlRegex = 'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
@@ -53,11 +59,15 @@ def parseSample(sample):
     soup = BeautifulSoup(body)
     codeNodes = soup.findAll('code')
     for codeNode in codeNodes:
-        temp = ''.join(codeNode.findAll(text=True)).lower().split()
+        code = u''.join(codeNode.findAll(text=True))
+        att.hasCode = True
+        lexer = guess_lexer(code)
+        lexerName = re.sub(' +','',lexer.name)
+        codeNames.add((lexerName))
+        temp = code.lower().split()
         for w in temp:
             if LEXICON_CODE.contains(w):
-                    codeTokens.add(w)
-        att.hasCode = True
+                codeTokens.add(w)
         codeNode.extract()
     if soup.a:
         att.hasLink = True
@@ -78,14 +88,14 @@ def parseSample(sample):
             m.replace('$','')
             temp = m.split()
             for w in temp:
-                if LEXICON_CODE.contains(w):
-                    codeTokens.add(w)
+                if LEXICON_FORMULA.contains(w):
+                    formulaTokens.add(w)
                 
     cleanBody = re.sub(formulaRegex,'',cleanBody)
     if len(prev)!=len(cleanBody):
         att.hasFormula = True 
 
-    return title,cleanBody,att,codeTokens
+    return title,cleanBody,att,formulaTokens,codeTokens,codeNames
 
     
 def parseHtmlSamples(fileName):
@@ -104,13 +114,13 @@ def parseHtmlSamples(fileName):
         if i>1:
             idsFile.write('\n')
             tagsFile.write('\n')
-        title,cleanBody,att,codeTokens = parseSample(row)    
+        title,cleanBody,att,formulaTokens,codeTokens,codeNames = parseSample(row)    
         if len(row)==4:
             tags = row[3]
         else:
             tags = ''
         idsFile.write(row[0])
-        sampleFile.writerow([title,cleanBody,att.hasCode,att.hasImage,att.hasList,att.hasLink,att.hasFormula,att.hasUrl,' '.join(codeTokens)])
+        sampleFile.writerow([title,cleanBody,att.hasCode,att.hasImage,att.hasList,att.hasLink,att.hasFormula,att.hasUrl,' '.join(formulaTokens),' '.join(codeTokens),' '.join(codeNames)])
         tagsFile.write(tags)   
         if i%1000==0:
             print i
@@ -125,7 +135,7 @@ def sampleGen(reader,size):
         if j>=size:
             break
         else:
-            yield row[0],row[1],row[2],row[3],row[4],row[5],row[6],row[7],row[8]
+            yield row[0],row[1],row[2],row[3],row[4],row[5],row[6],row[7],row[8],row[9],row[10]
 
 def tagsGen(reader,size):
     j=-1
@@ -167,23 +177,11 @@ def batchGenerator(batchSize,folderName,fileNamePrefix,totalRows=None):
 
 def toBinary(tagName,tags):
     Y = []
-    if tagName=='OTHER':
-        for l in tags:
-            found = False
-            for l1 in l:
-                if FILTERED_TAGS.has_key(l1):
-                    found = True
-                    break
-            if found:
-                Y.append(1)
-            else:                    
-                Y.append(0)
-    else:
-        for l in tags:
-            if tagName in l:
-                Y.append(1)
-            else:
-                Y.append(0)
+    for l in tags:
+        if tagName in l:
+            Y.append(1)
+        else:
+            Y.append(0)
     return Y
 
 
@@ -285,26 +283,53 @@ def filterTags(tagsFreqTh):
             tags[tup[0]] = freq
     return tags,filtered
 
-def getAllTokens(batchSize,folderName,fileNamePrefix,maxSamples=10000000,totalRows=None):
+def getAllTokens(batchSize,folderName,fileNamePrefix,totalRows=None):
     batchGen = batchGenerator(batchSize,folderName,fileNamePrefix,totalRows)
     i = 0
     for _,X,_ in batchGen:
         for sample in X:
-            i+=1
-            if randint(0,2)<2:
-                continue   
-            if i%100==0:
-                print i    
+            i+=1  
+            if i%1000==0:
+                print i
+            if randint(0,3)<3:
+                continue    
             title = sample[0]
             body = sample[1]
             tokenaizedTitle = tokenazie(title,USED_TAGS)
             tokenaizedBody = tokenazie(body,USED_TAGS)
             sents = tokenaizedTitle + tokenaizedBody
+            tokens = set()
             for sent in sents:
                 for token in sent:
-                    yield token
+                    tokens.add(token) 
+            for token in tokens:
+                yield token
+                    
 
-def getAllCodeTokens(maxSamples=10000000):
+def getAllCodeTokens():
+    reader = unicodecsv.reader(open('data/raw/Train.csv', 'r'))
+    i = -1
+    for row in reader:
+        i+=1
+        if i==0:
+            continue  
+        if randint(0,3)<3:
+            continue   
+        if i%1000==0:
+            print i 
+        if i>1:   
+            body = row[2] 
+            soup = BeautifulSoup(body)
+            codeNodes = soup.findAll('code')
+            for codeNode in codeNodes:
+                code = u''.join(codeNode.findAll(text=True))
+                temp = code.lower().split()
+                for w in temp:
+                    yield w
+                codeNode.extract()
+
+
+def getAllFormulaTokens():
     formulaRegex = '''\$.+?\$\$?'''
     reader = unicodecsv.reader(open('data/raw/Train.csv', 'r'))
     i = -1
@@ -316,22 +341,17 @@ def getAllCodeTokens(maxSamples=10000000):
             continue   
         if i%1000==0:
             print i  
-        if i>1:  
-            if i==maxSamples:
-                break
+        if i>1:   
             body = row[2]
             soup = BeautifulSoup(body)
             codeNodes = soup.findAll('code')
             for codeNode in codeNodes:
-                temp = ''.join(codeNode.findAll(text=True)).lower().split()
-                for w in temp:
-                    yield w
                 codeNode.extract()
             cleanBody = u''.join(soup.findAll(text=True)).lower()
             matches = re.findall(formulaRegex,cleanBody)
             if matches:
                 for m in matches:
-                    m.replace('$','')
+                    m = m.replace('$','')
                     temp = m.split()
                     for w in temp:
                         yield w
@@ -343,18 +363,29 @@ def createLexicon(dataFolder):
     lex = open('lexicon','w')
     c=0
     for key in fd:
-        if fd[key]>=5:
+        if fd[key]>=2:
+            c+=1
+            lex.write(key+'\n')
+    lex.close()
+    print 'lexicon size : ' + str(c)
+    
+def createLexiconFormula(maxSamples):
+    fd = FreqDist(getAllFormulaTokens())
+    lex = open('lexiconFormula','w')
+    c=0
+    for key in fd:
+        if fd[key]>=20:
             c+=1
             lex.write(key.encode('utf-8')+'\n')
     lex.close()
     print 'lexicon size : ' + str(c)
     
 def createLexiconCode(maxSamples):
-    fd = FreqDist(getAllCodeTokens(maxSamples))
+    fd = FreqDist(getAllCodeTokens())
     lex = open('lexiconCode','w')
     c=0
     for key in fd:
-        if fd[key]>=10:
+        if fd[key]>=100:
             c+=1
             lex.write(key.encode('utf-8')+'\n')
     lex.close()
@@ -429,6 +460,9 @@ class FeatureExtractor:
         body = sample[1]
         if sample[2]:
             res['hasCode']=1
+            codeNames = sample[10].split()
+            for codeName in codeNames:
+                res["codeName={}".format(codeName.encode('utf-8'))]=1
         if sample[3]:
             res['hasImage']=1
         if sample[4]:
@@ -439,10 +473,14 @@ class FeatureExtractor:
             res['hasUrl']=1
         if sample[7]:
             res['hasFormula']=1
-        codeTokens = sample[8].split()
+        formulaTokens = sample[8].split()
+        for w in formulaTokens:
+            res["formulaToken={}".format(w.encode('utf-8'))]=1
+        codeTokens = sample[9].split()
         for w in codeTokens:
-            res["codeToken={}".format(w.encode('utf-8'))]=1 
-                                
+            res["codeToken={}".format(w.encode('utf-8'))]=1
+         
+                               
 ##        for tag in self.tags:
 ##            ttag = tag.replace('-',' ')
 ##            if re.search('(^|\\s){0}(\\s|$|\\.|\\?|!)'.format(re.escape(ttag)),title,re.IGNORECASE):
@@ -456,8 +494,9 @@ class FeatureExtractor:
         bodyTokens = set()
         for tokens in tokenaizedBody:
             for i in range(len(tokens)):
-                if self.checkWord(tokens[i]):
-                    bodyTokens.add(tokens[i])                           
+                if tokens[i] not in bodyTokens:
+                    if self.checkWord(tokens[i]):
+                        bodyTokens.add(tokens[i])                           
         
         for tokens in tokenaizedTitle:
             for i in range(len(tokens)):
@@ -473,7 +512,7 @@ class FeatureExtractor:
                     if j>=len(tokens):
                         continue
                     if  self.checkWord(tokens[j]):
-                        res["bigram={} {}".format(tokens[i].encode('utf-8'),tokens[j].encode('utf-8'))]=1               
+                        res["bigram={} {}".format(tokens[i].encode('utf-8'),tokens[j].encode('utf-8'))]=1       
         return res       
 
 def trainClassifier(batchSize,dataFolder,clfFolderName,tagsSplitSize):
@@ -483,9 +522,8 @@ def trainClassifier(batchSize,dataFolder,clfFolderName,tagsSplitSize):
     if not os.path.exists(clfFolderName+'Temp'):
         os.makedirs(clfFolderName+'Temp')
     tags = list(USED_TAGS.keys())
-    tags.append("OTHER")
     totalRows = getTotalRows('data/'+dataFolder+'/TrainIds')
-    
+     
     hasher = FeatureHasher()
     batchGen = batchGenerator(batchSize,dataFolder,'Train',totalRows)   
     hashInd = 1
@@ -514,7 +552,7 @@ def trainClassifier(batchSize,dataFolder,clfFolderName,tagsSplitSize):
         print 'tags iteration : ' + str(loop)
         clfDic = {}
         for tag in currTags:
-            clfDic[tag] = SGDClassifier(n_iter=50,penalty='elasticnet')
+            clfDic[tag] = Perceptron(alpha=ALPHA,n_iter=N_ITER)
         batchGen = batchGenerator(batchSize,dataFolder,'Train',totalRows)
         batchInd = 1
         for _,_,targets_in_batch in batchGen:
@@ -607,7 +645,7 @@ class Classifier:
             if len(l)>5:
                 l.sort(key=lambda tup: -1 * tup[1])
                 l = l[:5]
-            pred = [t for t,v in l if v>th and t!="OTHER"] 
+            pred = [t for t,v in l if v>th] 
             if len(pred)==0 and len(l)>0:
                 pred = [l[0][0]]
             res.append(pred)
@@ -698,7 +736,7 @@ def evaluateTag(pred,exp,tag):
 
 
 
-def evaluateClassifier(clfFolderName,testFolderName,th=0):
+def evaluateClassifier(testFolderName,clfFolderName,th=0):
     clf = Classifier(clfFolderName)
     batchGen = batchGenerator(50000,testFolderName,'Test')
     pred = []
@@ -711,7 +749,7 @@ def evaluateClassifier(clfFolderName,testFolderName,th=0):
 
 def evaluateTags(clfFolderName,testFolderName):
     output = open('tagsEvaluation.csv','w')
-    pred,exp = evaluateClassifier(clfFolderName,testFolderName)
+    pred,exp = evaluateClassifier(testFolderName,clfFolderName)
     output.write('tag,freq, precision,recall,f_score,totalP,totalE\n')
     for tag in USED_TAGS.keys():
         precision,recall,f_score,totalP,totalE = evaluateTag(pred, exp, tag)
@@ -763,25 +801,27 @@ def findBestTh(clfFolderName,testFolderName):
         print
 
 
+
 #createLexiconCode(10000000)
+#createLexiconFormula(10000000)
 ####### STATIC FIELDS ########
-USED_TAGS,FILTERED_TAGS = filterTags(100)
+USED_TAGS,FILTERED_TAGS = filterTags(50)
 SENT_DETECTOR = data.load('tokenizers/punkt/english.pickle')
 STOP_WORDS = createStopWords()
 LEXICON_CODE = Lexicon('lexiconCode')
+LEXICON_FORMULA = Lexicon('lexiconFormula')
 LEXICON = Lexicon('lexicon')
+ALPHA = 0.0001
+N_ITER = 50
 ###############################
 
 
 
 
-#parseHtmlSamples('Train')
+#parseHtmlSamples('TrainSmall')
 #parseHtmlSamples('Test')
-#createTrainTestFiles('Train','large',5934196,100000,totalSamples=6034196)
-#createLexicon('large')
-#trainClassifier(50000,'large','clf',150)
-#evaluateClassifier('clf','large')
+#createTrainTestFiles('TrainSmall','100k',100000,20000,120000,USED_TAGS)
+trainClassifier(50000,'large','clf',150)
+evaluateClassifier('large','clf')
 #prepareForSub('clf3',505000)
-
-
-evaluateTags('clf','large')
+#evaluateTags('clf','large')
